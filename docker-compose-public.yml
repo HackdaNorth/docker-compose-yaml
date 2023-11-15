@@ -1,0 +1,885 @@
+version: '3.9'
+
+networks:
+  web:
+    external: true
+
+volumes:
+  changedetection-data:
+  influxdb2:
+    external: true
+  grafana-data:
+    external: true
+  postgresdata:
+  pgdata:
+  db-data:
+  nitter-redis:
+  nginx_config:
+  staticfiles:
+  uptime-kuma:
+
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    networks:
+      - web
+    volumes:
+      - uptime-kuma:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 3341:3001  # <Host Port>:<Container Port>
+    restart: always
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.uptime-kuma.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.uptime-kuma.tls=true"
+      - "traefik.http.routers.uptime-kuma.tls.certresolver=le"
+      - "traefik.http.middlewares.uptime-kuma.compress=true"
+      - "traefik.http.routers.uptime-kuma.middlewares=uptime-kuma@docker"
+      - "traefik.http.services.uptime-kuma.loadbalancer.server.port=3001"
+  adarkroom:
+    image: liwangsheng/adarkroom:latest
+    networks:
+      - web
+    container_name: adarkroom
+    ports:
+      - "9690:80"
+    restart: unless-stopped
+
+  web_recipes:
+    restart: always
+    image: vabene1111/recipes
+    container_name: web_recipes
+    env_file:
+      - ./.tandoor
+    volumes:
+      - staticfiles:/opt/recipes/staticfiles
+      - ./nginxconfig.conf:/opt/recipes/nginx/conf.d/Recipes.conf
+      - ./mediafiles:/opt/recipes/mediafiles
+    depends_on:
+      - postgres
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.recipes.loadbalancer.server.port=9494"
+
+  nginx_recipes:
+    image: nginx:mainline-alpine
+    container_name: nginx_recipes
+    restart: always
+    env_file:
+      - ./.tandoor
+    volumes:
+      - ./nginxconfig.conf:/etc/nginx/conf.d/Recipes.conf:ro
+      - staticfiles:/static:ro
+      - ./mediafiles:/media:ro
+    labels: # traefik example labels
+      - "traefik.enable=true"
+      - "traefik.http.routers.recipes.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.recipes.tls=true"
+      - "traefik.http.routers.recipes.tls.certresolver=le" # your cert resolver
+    depends_on:
+      - web_recipes
+    networks:
+      - web
+
+  nitter:
+    image: zedeus/nitter:latest
+    networks: 
+      - web
+    container_name: nitter
+    ports:
+      - "9300:9300"
+    volumes:
+      - ./nitter.conf:/src/nitter.conf:ro
+    depends_on:
+      - nitter-redis
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.nitter.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.nitter.tls=true"
+      - "traefik.http.routers.nitter.tls.certresolver=le"
+      - "traefik.http.middlewares.nitter.compress=true"
+      - "traefik.http.routers.nitter.middlewares=nitter@docker"
+      - "traefik.http.services.nitter.loadbalancer.server.port=9300"
+  nitter-redis:
+    image: redis:6-alpine
+    networks:
+      - web
+    container_name: nitter-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - nitter-redis:/data
+    restart: unless-stopped
+
+  librarian:
+    container_name: librarian
+    networks:
+      - web
+    image: codeberg.org/librarian/librarian:latest
+    ports:
+      - 9100:3000
+    volumes:
+      - ./librarian/config.yml:/app/config.yml
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.librarian.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.librarian.tls=true"
+      - "traefik.http.routers.librarian.tls.certresolver=le"
+      - "traefik.http.middlewares.librarian.compress=true"
+      - "traefik.http.routers.librarian.middlewares=librarian@docker"
+  photoprism:
+    container_name: photoprism
+    image: photoprism/photoprism:latest
+    networks:
+      - web
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    ports:
+      - "2344:2342" # HTTP port (host:container)
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.photoprism.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.photoprism.tls=true"
+      - "traefik.http.routers.photoprism.tls.certresolver=le"
+      - "traefik.http.middlewares.photoprism.compress=true"
+      - "traefik.http.routers.photoprism.middlewares=photoprism@docker"
+    environment:
+      PHOTOPRISM_INIT: "https"
+      PHOTOPRISM_UID: ${UID:-CENSORED}                         # user id, should match your host user id
+      PHOTOPRISM_GID: ${GID:-CENSORED}                         # group id
+      PHOTOPRISM_ADMIN_USER: "CENSORED"                       # superadmin username
+      PHOTOPRISM_ADMIN_PASSWORD: "CENSORED"              # initial superadmin password (minimum 8 characters)
+      PHOTOPRISM_AUTH_MODE: "CENSORED"                     # authentication mode (public, password)
+      #PHOTOPRISM_SITE_URL: "https://latest.localssl.dev/"  # server URL in the format "http(s)://domain.name(:port)/(path)"
+      PHOTOPRISM_SITE_CAPTION: "Latest"
+      PHOTOPRISM_SITE_DESCRIPTION: "Tags and finds pictures without getting in your way!"
+      PHOTOPRISM_SITE_AUTHOR: "@photoprism_app"
+      PHOTOPRISM_DEBUG: "true"
+      PHOTOPRISM_READONLY: "false"
+      PHOTOPRISM_EXPERIMENTAL: "false"
+      PHOTOPRISM_HTTP_MODE: "debug"
+      PHOTOPRISM_HTTP_HOST: "0.0.0.0"
+      PHOTOPRISM_HTTP_PORT: 2342
+      PHOTOPRISM_HTTP_COMPRESSION: "gzip"                  # improves transfer speed and bandwidth utilization (none or gzip)
+      PHOTOPRISM_DATABASE_DRIVER: "postgres"
+      PHOTOPRISM_DATABASE_SERVER: "postgres:5444"
+      PHOTOPRISM_DATABASE_NAME: "CENSORED"
+      PHOTOPRISM_DATABASE_USER: "CENSORED"
+      PHOTOPRISM_DATABASE_PASSWORD: "CENSORED"
+      PHOTOPRISM_DISABLE_CHOWN: "false"       # disables updating storage permissions via chmod and chown on startup
+      PHOTOPRISM_DISABLE_BACKUPS: "false"     # disables backing up albums and photo metadata to YAML files
+      PHOTOPRISM_DISABLE_WEBDAV: "false"      # disables built-in WebDAV server
+      PHOTOPRISM_DISABLE_SETTINGS: "false"    # disables settings UI and API
+      PHOTOPRISM_DISABLE_PLACES: "false"      # disables reverse geocoding and maps
+      PHOTOPRISM_DISABLE_EXIFTOOL: "false"    # disables creating JSON metadata sidecar files with ExifTool
+      PHOTOPRISM_DISABLE_TENSORFLOW: "false"  # disables all features depending on TensorFlow
+      PHOTOPRISM_DETECT_NSFW: "true"         # automatically flags photos as private that MAY be offensive (requires TensorFlow)
+      PHOTOPRISM_UPLOAD_NSFW: "true"         # allows uploads that MAY be offensive (no effect without TensorFlow)
+      PHOTOPRISM_RAW_PRESETS: "false"         # enables applying user presets when converting RAW files (reduces performance)
+      PHOTOPRISM_THUMB_FILTER: "lanczos"      # resample filter, best to worst: blackman, lanczos, cubic, linear
+      PHOTOPRISM_THUMB_UNCACHED: "true"       # enables on-demand thumbnail rendering (high memory and cpu usage)
+      PHOTOPRISM_THUMB_SIZE: 2048             # pre-rendered thumbnail size limit (default 2048, min 720, max 7680)
+      # PHOTOPRISM_THUMB_SIZE: 4096           # Retina 4K, DCI 4K (requires more storage); 7680 for 8K Ultra HD
+      PHOTOPRISM_THUMB_SIZE_UNCACHED: 7680    # on-demand rendering size limit (default 7680, min 720, max 7680)
+      PHOTOPRISM_JPEG_SIZE: 7680              # size limit for converted image files in pixels (720-30000)
+      PHOTOPRISM_JPEG_QUALITY: 85             # a higher value increases the quality and file size of JPEG images and thumbnails (25-100)
+      TF_CPP_MIN_LOG_LEVEL: 0                 # show TensorFlow log messages for development
+    working_dir: "/photoprism"
+    volumes:
+      - "/mnt/media/backups/storage:/photoprism/storage"
+      - "/mnt/media/backups/storage/originals:/photoprism/originals"
+  healthcheckdb:
+    image: postgres:12
+    networks:
+      - web
+    container_name: healthcheck-db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_PASSWORD=CENSORED
+
+  healthcheck:
+    image: healthchecks/healthchecks
+    container_name: healthchecks
+    networks:
+      - web
+    env_file:
+      - hc.env
+    ports:
+      - "8990:8000"
+    depends_on:
+      - healthcheckdb
+    labels:
+      - "traefik.http.routers.healthcheck.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.healthcheck.tls=true"
+      - "traefik.http.routers.healthcheck.tls.certresolver=le"
+      - "traefik.http.middlewares.healthcheck.compress=true"
+      - "traefik.http.routers.healthcheck.middlewares=healthcheck@docker"
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    networks:
+      - web
+    restart: always
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      start_period: 15s
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=CENSORED
+  
+  resume-server:
+    image: amruthpillai/reactive-resume:server-latest
+    restart: always
+    container_name: resumesvr
+    networks:
+      - web
+    ports:
+      - 3100:3100
+    depends_on:
+      - postgres
+    environment:
+      - PUBLIC_URL=https://CENSORED
+      - PUBLIC_SERVER_URL=https://CENSORED
+      - POSTGRES_DB=CENSORED
+      - POSTGRES_USER=CENSORED
+      - POSTGRES_PASSWORD=CENSORED
+      - SECRET_KEY=Yeliah
+      - POSTGRES_HOST=CENSORED
+      - POSTGRES_PORT=CENSORED
+      - POSTGRES_SSL_CERT=
+      - JWT_SECRET=Yeliah
+      - JWT_EXPIRY_TIME=604800
+      - MAIL_FROM_NAME=CENSORED
+      - MAIL_FROM_EMAIL=CENSORED
+      - MAIL_HOST=CENSORED
+      - MAIL_PORT=CENSORED
+      - MAIL_USERNAME=CENSORED
+      - MAIL_PASSWORD=CENSORED
+    labels:
+      - "traefik.http.routers.resume-server.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.resume-server.tls=true"
+      - "traefik.http.routers.resume-server.tls.certresolver=le"
+      - "traefik.http.middlewares.resume-server.compress=true"
+      - "traefik.http.routers.resume-server.middlewares=resume-server@docker"
+      - "traefik.http.services.resume-server.loadbalancer.server.port=3100"
+  resume-client:
+    image: amruthpillai/reactive-resume:client-latest
+    container_name: resumecli
+    networks:
+      - web
+    restart: always
+    ports:
+      - 3300:3000
+    depends_on:
+      - resume-server
+    environment:
+      - PUBLIC_URL=https://CENSORED
+      - PUBLIC_SERVER_URL=https://CENSORED
+    labels:
+      - "traefik.http.routers.resume-client.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.resume-client.tls=true"
+      - "traefik.http.routers.resume-client.tls.certresolver=le"
+      - "traefik.http.middlewares.resume-client.compress=true"
+      - "traefik.http.routers.resume-client.middlewares=resume-client@docker"
+  wallabag:
+    image: wallabag/wallabag
+    container_name: wallabag
+    networks:
+      - web
+    environment:
+      - MYSQL_ROOT_PASSWORD=wallaroot
+      - SYMFONY__ENV__DATABASE_DRIVER=pdo_mysql
+      - SYMFONY__ENV__DATABASE_HOST=db
+      - SYMFONY__ENV__DATABASE_PORT=CENSORED
+      - SYMFONY__ENV__DATABASE_NAME=CENSORED
+      - SYMFONY__ENV__DATABASE_USER=CENSORED
+      - SYMFONY__ENV__DATABASE_PASSWORD=CENSORED
+      - SYMFONY__ENV__DATABASE_CHARSET=utf8mb4
+      - SYMFONY__ENV__DATABASE_TABLE_PREFIX="wallabag_"
+      - SYMFONY__ENV__DOMAIN_NAME=https://CENSORED/
+    ports:
+      - "888:80"
+    volumes:
+      - /opt/wallabag/images:/var/www/wallabag/web/assets/images
+    labels:
+      - "traefik.http.routers.wallabag.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.wallabag.tls=true"
+      - "traefik.http.routers.wallabag.tls.certresolver=le"
+      - "traefik.http.middlewares.wallabag.compress=true"
+      - "traefik.http.routers.wallabag.middlewares=wallabag@docker"
+  db:
+    image: mariadb
+    container_name: mariadb
+    networks:
+      - web
+    environment:
+      - MYSQL_ROOT_PASSWORD=wallaroot
+    volumes:
+      - /opt/wallabag/data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      interval: 20s
+      timeout: 3s
+
+  libreddit:
+    image: libreddit/libreddit
+    restart: always
+    networks:
+      - web
+    container_name: "libreddit"
+    ports:
+      - 8585:8080
+    labels:
+      - "traefik.http.routers.libreddit.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.libreddit.tls=true"
+      - "traefik.http.routers.libreddit.tls.certresolver=le"
+      - "traefik.http.middlewares.libreddit.compress=true"
+      - "traefik.http.routers.libreddit.middlewares=libreddit@docker"
+  invidious:
+    image: quay.io/invidious/invidious:latest
+    networks:
+      - web
+    restart: unless-stopped
+    ports:
+      - 4001-4007:3000
+    deploy:
+      mode: replicated
+      replicas: 7
+      endpoint_mode: vip
+      restart_policy:
+        condition: any
+        delay: 30s
+        window: 30s
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 1500M
+        reservations:
+          cpus: '0.15'
+          memory: 400M
+    environment:
+      INVIDIOUS_CONFIG: |
+        db:
+          dbname: invidious
+          user: kemal
+          password: kemal
+          host: invidious-db
+          port: CENSORED
+        check_tables: true
+        hmac_key: "CENSORED"
+        # external_port:
+        # domain:
+        # https_only: false
+        # statistics_enabled: false
+    labels:
+      - "traefik.http.routers.invidious.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.invidious.tls=true"
+      - "traefik.http.routers.invidious.tls.certresolver=le"
+      - "traefik.http.middlewares.invidious.compress=true"
+      - "traefik.http.routers.invidious.middlewares=invidious@docker"
+    
+  invidious-db:
+    image: docker.io/library/postgres:14
+    restart: unless-stopped
+    networks:
+      - web
+    volumes:
+      - postgresdata:/var/lib/postgresql/data
+      - ./config/sql:/config/sql
+      - ./docker/init-invidious-db.sh:/docker-entrypoint-initdb.d/init-invidious-db.sh
+    environment:
+      POSTGRES_DB: invidious
+      POSTGRES_USER: kemal
+      POSTGRES_PASSWORD: kemal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+
+  reverse-proxy:
+    #The official v2 Traefik docker image
+    image: traefik:v2.9
+    container_name: proxy
+    #Enables the web UI and tells Traefik to listen to docker
+    networks:
+      - web
+    command:
+      # Set loglevel
+      - --log.level=DEBUG
+      - --api.insecure=true
+      - --configFile=/traefik.toml
+      - --providers.docker
+    ports:
+      # The HTTP port
+      - "443:80"
+      # The Web UI (enabled by --api.insecure=true)
+      - "8080:8080"
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /mnt/nvme/docker/traefik/acme.json:/acme.json
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/nvme/docker/traefik/traefik.toml:/traefik.toml
+    environment:
+      - CF_API_EMAIL=CENSORED
+      - CF_DNS_API_TOKEN=CENSORED
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.http_catchall.rule=HostRegexp(`{any:.+}`)
+      - traefik.http.routers.http_catchall.entrypoints=web
+      - traefik.http.routers.http_catchall.middlewares=https_redirect
+      - traefik.http.middlewares.https_redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.https_redirect.redirectscheme.permanent=true
+      #define rules for traefik dashboard
+      - "traefik.http.routers.reverse-proxy.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.reverse-proxy.tls=true"
+      - "traefik.http.routers.reverse-proxy.tls.certresolver=le"
+      - "traefik.http.middlewares.reverse-proxy.compress=true"
+      - "traefik.http.routers.reverse-proxy.middlewares=reverse-proxy@docker"
+      - "traefik.http.services.reverse-proxy-docker.loadbalancer.server.port=8080"
+  vaultwarden:
+    image: vaultwarden/server:latest
+    networks:
+      - web
+    container_name: vaultwarden
+    restart: always
+    environment:
+      WEBSOCKET_ENABLED: "false"  # Enable WebSocket notifications.
+      SIGNUPS_ALLOWED: "false"
+      INVITATIONS_ALLOWED: "false"
+    volumes:
+      - ./vw-data:/data
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.vaultwarden.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.vaultwarden.tls=true"
+      - "traefik.http.routers.vaultwarden.tls.certresolver=le"
+      - "traefik.http.middlewares.vaultwarden.compress=true"
+      - "traefik.http.routers.vaultwarden.middlewares=vaultwarden@docker"    
+  changedetection:
+    image: ghcr.io/dgtlmoon/changedetection.io
+    container_name: changedetection
+    hostname: changedetection
+    networks:
+      - web
+    volumes:
+      - changedetection-data:/datastore
+    ports:
+      - CENSORED
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.changedetection.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.changedetection.tls=true"
+      - "traefik.http.routers.changedetection.tls.certresolver=le"
+      - "traefik.http.middlewares.changedetection.compress=true"
+      - "traefik.http.routers.changedetection.middlewares=changedetection@docker"
+    environment:
+      - PLAYWRIGHT_DRIVER_URL=ws://playwright-chrome:3000/
+  playwright-chrome:
+    container_name: playwright
+    hostname: playwright-chrome
+    networks:
+      - web
+    ports:
+      - 3009:3000
+    image: browserless/chrome
+    restart: unless-stopped
+  snippet-box:
+    image: pawelmalak/snippet-box:latest
+    container_name: snippet-box
+    networks:
+      - web
+    volumes:
+      - ./snipbox/data:/app/data
+    ports:
+      - 5002:5000
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.snippet-box.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.snippet-box.tls=true"
+      - "traefik.http.routers.snippet-box.tls.certresolver=le"
+      - "traefik.http.middlewares.snippet-box.compress=true"
+      - "traefik.http.routers.snippet-box.middlewares=snippet-box@docker" 
+  archivebox:
+    container_name: archivebox
+    restart: unless-stopped
+    networks:
+      - web
+    image: ${DOCKER_IMAGE:-archivebox/archivebox:master}
+    command: server --quick-init 0.0.0.0:8000
+    ports:
+     - 8000:8000
+    environment:
+     - ALLOWED_HOSTS=*                   # add any config options you want as env vars
+     - MEDIA_MAX_SIZE=750m
+    volumes:
+     - ./data:/data
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.archivebox.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.archivebox.tls=true"
+      - "traefik.http.routers.archivebox.tls.certresolver=le"
+      - "traefik.http.middlewares.archivebox.compress=true"
+      - "traefik.http.routers.archivebox.middlewares=archivebox@docker" 
+  paste:
+    image: danielszabo99/microbin
+    container_name: microbin
+    networks:
+      - web
+    restart: unless-stopped
+    ports:
+     - "8088:8080"
+    volumes:
+     - ./microbin-data:/app/pasta_data
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.paste.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.paste.tls=true"
+      - "traefik.http.routers.paste.tls.certresolver=le"
+      - "traefik.http.middlewares.paste.compress=true"
+      - "traefik.http.routers.paste.middlewares=paste@docker" 
+  linkding:
+    container_name: "${LD_CONTAINER_NAME:-linkding}"
+    image: sissbruecker/linkding:latest
+    networks:
+      - web
+    ports:
+      - "${LD_HOST_PORT:-9090}:9090"
+    volumes:
+      - "./linkding:/etc/linkding/data"
+    env_file:
+      - linkding.env
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.linkding.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.linkding.tls=true"
+      - "traefik.http.routers.linkding.tls.certresolver=le"
+      - "traefik.http.middlewares.linkding.compress=true"
+      - "traefik.http.routers.linkding.middlewares=linkding@docker" 
+  influxdb:
+    container_name: influxdb
+    restart: unless-stopped
+    image: influxdb:latest
+    networks:
+      - web
+    volumes:
+      # Mount for influxdb data directory and configuration
+      - ./influxdb:/var/lib/influxdb2:rw
+    ports:
+      - "8086:8086"
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.influxdb.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.influxdb.tls=true"
+      - "traefik.http.routers.influxdb.tls.certresolver=le"
+      - "traefik.http.middlewares.influxdb.compress=true"
+      - "traefik.http.routers.influxdb.middlewares=influxdb@docker"
+  # Use the influx cli to set up an influxdb instance. 
+  influxdb_cli:
+    hostname: influxcli
+    links:
+      - influxdb
+    image: influxdb:latest
+    volumes:
+      # Mount for influxdb data directory and configuration
+      - ./influxdb:/var/lib/influxdb2:rw
+      - ./.ssl/influxdb-selfsigned.crt:/etc/ssl/influxdb-selfsigned.crt:rw
+      - ./.ssl/influxdb-selfsigned.key:/etc/ssl/influxdb-selfsigned.key:rw
+    environment: 
+       # Use these same configurations parameters in your telegraf configuration, mytelegraf.conf.
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=CENSORED
+      - DOCKER_INFLUXDB_INIT_PASSWORD=CENSORED
+      - DOCKER_INFLUXDB_INIT_ORG=CENSORED
+      - DOCKER_INFLUXDB_INIT_BUCKET=CENSORED
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=CENSORED
+    entrypoint: ["./entrypoint.sh"]
+    restart: on-failure:10
+    depends_on:
+      - influxdb
+  grafana:
+   container_name: grafana
+   image: grafana/grafana-enterprise:8.2.0
+   restart: unless-stopped
+   ports:
+     - 3000:3000
+   networks:
+     - web
+   volumes:
+     - "grafana-data:/var/lib/grafana"
+   labels:
+     - "traefuk.enable=true"  
+     - "traefik.http.routers.grafana.rule=Host(`CENSORED`)"
+     - "traefik.http.routers.grafana.tls=true"
+     - "traefik.http.routers.grafana.tls.certresolver=le"
+     - "traefik.http.middlewares.grafana.compress=true"
+     - "traefik.http.routers.grafana.middlewares=grafana@docker"
+  telegraf:
+    image: telegraf
+    restart: always
+    container_name: telegraf
+    user: telegraf:998
+    networks:
+       - web
+    links:
+      - influxdb
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/nvme/docker/.telegraf/mytelegraf.conf:/etc/telegraf/telegraf.conf
+    depends_on:
+      - influxdb_cli
+      
+  cyberchef:
+    container_name: cyberchef
+    restart: unless-stopped
+    image: mpepping/cyberchef
+    networks:
+      - web
+    ports:
+      - 8001:8000
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.cyberchef.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.cyberchef.tls=true"
+      - "traefik.http.routers.cyberchef.tls.certresolver=le"
+      - "traefik.http.middlewares.cyberchef.compress=true"
+      - "traefik.http.routers.cyberchef.middlewares=cyberchef@docker" 
+  glances:
+    image: nicolargo/glances
+    container_name: glances
+    restart: always
+    privileged: true
+    networks:
+      - web
+    pid: host
+    volumes:
+      - ./.config/glances/glances.conf:/glances/conf
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=America/Toronto
+      - "GLANCES_OPT=-w"
+    ports:
+      - CENSORED
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.glances.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.glances.tls=true"
+      - "traefik.http.routers.glances.tls.certresolver=le"
+      - "traefik.http.middlewares.glances.compress=true"
+      - "traefik.http.routers.glances.middlewares=glances@docker" 
+  watchtower:
+    image: index.docker.io/containrrr/watchtower:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.docker/config.json:/config.json
+  code-server:
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: code-server
+    networks:
+      - web   
+    environment:
+      - PUID=CENSORED
+      - PGID=CENSORED
+      - TZ=America/Toronto
+      - PASSWORD=CENSORED #optional
+      - HASHED_PASSWORD= #optional
+      - SUDO_PASSWORD=CENSORED #optional
+      - SUDO_PASSWORD_HASH=CENSORED #optional
+      - PROXY_DOMAIN=CENSORED #optional
+      - DEFAULT_WORKSPACE=/config/workspace #optional
+    volumes:
+      - ./.codeserver:/config
+      - ./code-projects:/projects
+    ports:
+      - 8443:8443
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.code-server.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.code-server.tls=true"
+      - "traefik.http.routers.code-server.tls.certresolver=le"
+      - "traefik.http.middlewares.code-server.compress=true"
+      - "traefik.http.routers.code-server.middlewares=code-server@docker"
+  librespeed:
+    image: lscr.io/linuxserver/librespeed:latest
+    container_name: librespeed
+    networks:
+      - web
+    environment:
+      - PUID=CENSORED
+      - PGID=CENSORED
+      - TZ=America/Toronto
+      - PASSWORD=PASSWORD
+      - CUSTOM_RESULTS=false #optional
+      - DB_TYPE=sqlite #optional
+      - DB_NAME=DB_NAME #optional
+      - DB_HOSTNAME=DB_HOSTNAME #optional
+      - DB_USERNAME=DB_USERNAME #optional
+      - DB_PASSWORD=DB_PASSWORD #optional
+      - DB_PORT=DB_PORT #optional
+    volumes:
+      - ./.librespeed:/config
+    ports:
+      - 801:80
+    restart: unless-stopped
+    labels: 
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.librespeed.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.librespeed.tls=true"
+      - "traefik.http.routers.librespeed.tls.certresolver=le"
+      - "traefik.http.middlewares.librespeed.compress=true"
+      - "traefik.http.routers.librespeed.middlewares=librespeed@docker" 
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    user: CENSORED:CENSORED
+    networks:
+      - web
+    ports:
+      - "4533:4533"
+    restart: unless-stopped
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info  
+      ND_SESSIONTIMEOUT: 24h
+      ND_BASEURL: ""
+    volumes:
+      - "./.navidrome/data:/data"
+      - "/mnt/media/media/OrganizedMusic:/music:ro"
+    labels: 
+      - "traefuk.enable=true"  
+      - "traefik.http.routers.navidrome.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.navidrome.tls=true"
+      - "traefik.http.routers.navidrome.tls.certresolver=le"
+      - "traefik.http.middlewares.navidrome.compress=true"
+      - "traefik.http.routers.navidrome.middlewares=navidrome@docker"  
+  dashy:
+    image: lissy93/dashy
+    container_name: dashy
+    networks:
+      - web
+    volumes:
+      - ./config.yml:/app/public/conf.yml
+      - ./dashy/icons/:/app/public/item-icons/
+    ports:
+      - 4000:80
+    environment:
+      - NODE_ENV=production
+      - UID=CENSORED
+      - GID=CENSORED
+    restart: unless-stopped
+    labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.dashy.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.dashy.tls=true"
+      - "traefik.http.routers.dashy.tls.certresolver=le"
+      - "traefik.http.middlewares.dashy.compress=true"
+      - "traefik.http.routers.dashy.middlewares=dashy@docker"  
+
+  wings:
+    image: ghcr.io/pterodactyl/wings:latest
+    restart: always
+    container_name: wings   
+    networks:
+       - web
+    ports:
+       - "2022:2022"
+    tty: true
+    environment:
+       TZ: "EST"
+       WINGS_UID: CENSORED
+       WINGS_GID: CENSORED
+       WINGS_USERNAME: pterodactyl
+    volumes:
+       - "/var/run/docker.sock:/var/run/docker.sock"
+       - "/var/lib/docker/containers/:/var/lib/docker/containers/"
+       - "/etc/pterodactyl/:/etc/pterodactyl/"
+       - "/var/lib/pterodactyl/:/var/lib/pterodactyl/"
+       - "/var/log/pterodactyl/:/var/log/pterodactyl/"
+       - "/tmp/pterodactyl/:/tmp/pterodactyl/"
+       - "/etc/ssl/certs:/etc/ssl/certs:ro"
+       - "/etc/letsencrypt/:/etc/letsencrypt/"
+    labels:
+       - "traefuk.enable=true"
+       - "traefik.http.routers.wings.rule=Host(`CENSORED`)"
+       - "traefik.http.routers.wings.tls=true"
+       - "traefik.http.routers.wings.tls.certresolver=le"
+       - "traefik.http.middlewares.wings.compress=true"
+       - "traefik.http.routers.wings.middlewares=wings@docker"
+       - "traefik.http.services.wings.loadbalancer.server.port=443"
+  pandatabase:
+     container_name: pandatabase
+     image: mariadb:10.5
+     restart: always
+     networks:
+       - web
+     command: --default-authentication-plugin=mysql_native_password
+     volumes:
+       - "./pterodactyl-data/database:/var/lib/mysql:rw"
+
+     environment:
+       MYSQL_DATABASE: "CENSORED"
+       MYSQL_USER: "CENSORED"
+       MYSQL_PASSWORD: "CENSORED"
+       MYSQL_ROOT_PASSWORD: "CENSORED"
+
+  cache:
+     image: redis:alpine
+     restart: always
+     container_name: cache
+     networks:
+       - web
+  
+  panel:
+     container_name: panel
+     image: ghcr.io/pterodactyl/panel:latest
+     restart: always
+     networks:
+       - web
+     ports:
+       - "8092:80"
+       #- "443:443"
+     links:
+       - pandatabase
+       - cache
+     volumes:
+       - "./pterodactyl-data:/app/var/"
+       - "./pterodactyl-data:/etc/nginx/http.d/"
+       - "./pterodactyl-data:/etc/letsencrypt/"
+       - "./pterodactyl-data:/app/storage/logs/"
+     environment:
+       USERNAME: "CENSORED"
+       PASSWORD: "CENSORED"
+       APP_TIMEZONE: "EST"
+       DB_PASSWORD: "CENSORED"
+       APP_ENV: "production"
+       APP_ENVIRONMENT_ONLY: "false"
+       CACHE_DRIVER: "redis"
+       SESSION_DRIVER: "redis"
+       QUEUE_DRIVER: "redis"
+       REDIS_HOST: "cache"
+       DB_HOST: "pandatabase"
+       DB_PORT: "CENSORED"
+     labels:
+      - "traefuk.enable=true"
+      - "traefik.http.routers.pterodactyl.rule=Host(`CENSORED`)"
+      - "traefik.http.routers.pterodactyl.tls=true"
+      - "traefik.http.routers.pterodactyl.tls.certresolver=le"
+      - "traefik.http.middlewares.pterodactyl.compress=true"
+      - "traefik.http.routers.pterodactyl.middlewares=pterodactyl@docker"
